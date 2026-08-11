@@ -7,6 +7,9 @@ from .base import RobotAdapter
 
 
 class FrankaAdapter(RobotAdapter):
+    _GRASP_THRESHOLD = 0.70
+    _RELEASE_THRESHOLD = 0.20
+
     def __init__(self, config):
         self.config = config
         self._robot = None
@@ -15,6 +18,7 @@ class FrankaAdapter(RobotAdapter):
         self._fingers = []
         self._last_arm = None
         self._finger_target = None
+        self._grasp_closed = False
 
     @property
     def entity(self):
@@ -79,11 +83,17 @@ class FrankaAdapter(RobotAdapter):
 
     def apply_gripper_trigger(self, trigger):
         c = self.config["gripper"]
-        t = np.clip(
-            (trigger - c["trigger_deadzone"]) / (1 - c["trigger_deadzone"]), 0, 1
-        )
-        self._finger_target = c["open_position"] + t * (
-            c["closed_position"] - c["open_position"]
+        trigger = float(trigger)
+        if self._grasp_closed:
+            if trigger <= self._RELEASE_THRESHOLD:
+                self._grasp_closed = False
+        elif trigger >= self._GRASP_THRESHOLD:
+            self._grasp_closed = True
+
+        self._finger_target = (
+            c["closed_position"]
+            if self._grasp_closed
+            else c["open_position"]
         )
         self._robot.control_dofs_position(
             np.full(2, self._finger_target), dofs_idx_local=self._fingers
