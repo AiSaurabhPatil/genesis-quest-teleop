@@ -46,6 +46,11 @@ class GenesisTeleopApp:
         gs.init(backend=gs.cuda if s["backend"] == "gpu" else gs.cpu)
         self.scene = gs.Scene(
             sim_options=gs.options.SimOptions(dt=s["dt"]),
+            rigid_options=gs.options.RigidOptions(
+                box_box_detection=True,
+                noslip_iterations=5,
+                noslip_tolerance=1e-6,
+            ),
             viewer_options=gs.options.ViewerOptions(
                 camera_pos=(1.4, -1.4, 1.1),
                 camera_lookat=(0.45, 0, 0.35),
