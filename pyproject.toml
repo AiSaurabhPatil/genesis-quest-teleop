@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "genesis-quest-teleop"
+version = "0.1.0"
+description = "Low-latency Meta Quest teleoperation backend for Genesis World"
+requires-python = ">=3.11,<3.12"
+dependencies = ["torch", "genesis-world", "aiortc", "aiohttp", "numpy", "scipy", "PyYAML"]
+
+[project.scripts]
+genesis-quest-teleop = "genesis_quest_teleop.main:main"
+genesis-quest-ingress = "genesis_quest_teleop.ingress:main"
+
+[dependency-groups]
+dev = ["ruff"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+genesis-world = { path = "../genesis-world", editable = true }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff.lint]
+ignore = ["TRY004", "BLE001", "LOG015"]

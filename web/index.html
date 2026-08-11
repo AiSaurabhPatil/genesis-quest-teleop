@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Genesis Quest Teleop</title>
+  </head>
+  <body>
+    <canvas id="xr-canvas" hidden></canvas>
+    <main>
+      <h1>Genesis Quest Teleop</h1>
+      <p>
+        PC: <span id="pc">ready</span> · WebRTC: <span id="rtc">idle</span> · XR:
+        <span id="xr">idle</span>
+      </p>
+      <button id="start">Start XR</button>
+      <button id="stop">Stop XR</button>
+      <pre id="debug"></pre>
+    </main>
+
+    <script src="/quest_client.js"></script>
+  </body>
+</html>

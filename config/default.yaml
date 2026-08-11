@@ -1,0 +1,40 @@
+server: {host: "0.0.0.0", port: 8443}
+web: {directory: "web"}
+webrtc: {data_channel_label: "quest-teleop", ice_servers: [], max_message_bytes: 16384}
+ipc: {host: "127.0.0.1", port: 8765}
+tls: {cert_file: "certs/cert.pem", key_file: "certs/key.pem"}
+sim: {backend: "gpu", dt: 0.008333333333333333, control_hz: 60, show_viewer: true, warmup_steps: 60}
+scene:
+  grasp_cube:
+    enabled: true
+    position: [0.65, 0.0, 0.025]
+    size: [0.05, 0.05, 0.05]
+    friction: 1.5
+    density: 600.0
+    color: [0.2, 0.8, 0.2, 1.0]
+robot:
+  type: "franka"
+  mjcf_file: "xml/franka_emika_panda/panda.xml"
+  end_effector_link: "hand"
+  arm_joint_names: [joint1, joint2, joint3, joint4, joint5, joint6, joint7]
+  finger_joint_names: [finger_joint1, finger_joint2]
+  home_qpos: [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785, 0.04, 0.04]
+teleop:
+  active_hand: "right"
+  translation_scale: 1.0
+  clutch_engage_threshold: 0.55
+  clutch_release_threshold: 0.45
+  stale_timeout_ms: 150
+  max_target_translation_step_m: 0.025
+  max_target_rotation_step_rad: 0.20
+  workspace: {x: [0.20, 0.80], y: [-0.55, 0.55], z: [0.08, 0.90]}
+diffik: {damping: 0.02, position_gain: 0.7, rotation_gain: 0.5, max_joint_delta_rad: 0.08, joint_limit_margin_rad: 0.03}
+gripper:
+  open_position: 0.04
+  closed_position: 0.0
+  trigger_deadzone: 0.05
+  finger_friction: 2.0
+  kp: 100.0
+  kv: 10.0
+  force_limit: 100.0
+diagnostics: {log_period_s: 2.0, debug_target_frame: true}
