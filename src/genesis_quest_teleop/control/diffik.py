@@ -17,6 +17,13 @@ class DifferentialIKController:
         self.lower = lower_limit.cpu().numpy()
         self.upper = upper_limit.cpu().numpy()
         self.last_valid = None
+        # Read-only diagnostics used by the standalone OpenArm validation.  They
+        # intentionally mirror values used for the command and do not affect
+        # control behavior or the existing Franka interface.
+        self.last_error = None
+        self.last_dq = None
+        self.last_jacobian = None
+        self.last_singular_values = None
 
     def compute_command(self, target_pos, target_quat_wxyz):
         try:
@@ -24,6 +31,8 @@ class DifferentialIKController:
 
             pos = self.ee_link.get_pos().cpu().numpy()
             q = self.ee_link.get_quat().cpu().numpy()
+            # Genesis's angular Jacobian rows use the end-effector/body frame,
+            # so use the body-frame residual taking current to target.
             errq = gs.transform_quat_by_quat(gs.inv_quat(q), target_quat_wxyz)
             rot = gs.quat_to_rotvec(errq)
             error = np.r_[self.pg * (target_pos - pos), self.rg * rot]
@@ -51,6 +60,10 @@ class DifferentialIKController:
             )
             if not np.isfinite(cmd).all():
                 return None
+            self.last_error = error.copy()
+            self.last_dq = dq.copy()
+            self.last_jacobian = jac.copy()
+            self.last_singular_values = np.linalg.svd(jac, compute_uv=False)
             self.last_valid = cmd
             return cmd
         except (ValueError, np.linalg.LinAlgError, RuntimeError):
