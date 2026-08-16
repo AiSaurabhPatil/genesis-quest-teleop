@@ -58,14 +58,82 @@ def load_config(path: str | Path) -> dict:
                 raise ValueError("scene.grasp_cube friction and density must be positive")
             if len(cube["color"]) != 4:
                 raise ValueError("scene.grasp_cube color must be RGBA")
+            pbr = cube.get("pbr", {})
+            for key in ("metallic", "roughness"):
+                if key in pbr and not 0.0 <= float(pbr[key]) <= 1.0:
+                    raise ValueError(f"scene.grasp_cube.pbr.{key} must be in [0, 1]")
         if not 0.01 <= float(config["gripper"]["finger_friction"]) <= 5.0:
             raise ValueError("gripper.finger_friction must be between 0.01 and 5.0")
+        robot = config["robot"]
+        for key in ("base_position", "base_euler_deg"):
+            if key in robot and len(robot[key]) != 3:
+                raise ValueError(f"robot.{key} must contain [x, y, z]")
         t = config["teleop"]
         if not 0 <= t["clutch_release_threshold"] < t["clutch_engage_threshold"] <= 1:
             raise ValueError("invalid clutch thresholds")
         for axis in "xyz":
             if t["workspace"][axis][0] >= t["workspace"][axis][1]:
                 raise ValueError(f"workspace.{axis} min must be less than max")
+        nyx = config.get("nyx_camera", {})
+
+        if nyx.get("enabled", False):
+            resolution = nyx["resolution"]
+
+            if len(resolution) != 2:
+                raise ValueError(
+                    "nyx_camera.resolution must contain [width, height]"
+                )
+
+            if any(int(value) <= 0 for value in resolution):
+                raise ValueError(
+                    "nyx_camera.resolution values must be positive"
+                )
+
+            if not 1.0 <= float(nyx["fov"]) < 180.0:
+                raise ValueError(
+                    "nyx_camera.fov must be between 1 and 180 degrees"
+                )
+
+            if float(nyx["near"]) <= 0:
+                raise ValueError(
+                    "nyx_camera.near must be positive"
+                )
+
+            if float(nyx["far"]) <= float(nyx["near"]):
+                raise ValueError(
+                    "nyx_camera.far must be greater than near"
+                )
+
+            if int(nyx["spp"]) <= 0:
+                raise ValueError(
+                    "nyx_camera.spp must be positive"
+                )
+
+            if float(nyx["render_hz"]) <= 0:
+                raise ValueError(
+                    "nyx_camera.render_hz must be positive"
+                )
+
+            offset_T = nyx["offset_T"]
+
+            if (
+                len(offset_T) != 4
+                or any(len(row) != 4 for row in offset_T)
+            ):
+                raise ValueError(
+                    "nyx_camera.offset_T must be a 4x4 matrix"
+                )
+
+            if not str(nyx["parent_link"]):
+                raise ValueError(
+                    "nyx_camera.parent_link must not be empty"
+                )
+
+        physics_hz = 1.0 / float(config["sim"]["dt"])
+        if float(nyx["render_hz"]) > physics_hz:
+            raise ValueError(
+                "nyx_camera.render_hz must not exceed physics frequency"
+            )
     except KeyError as exc:
         raise ValueError(f"missing configuration key: {exc}") from exc
     return config

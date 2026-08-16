@@ -7,11 +7,15 @@ name = "genesis-quest-teleop"
 version = "0.1.0"
 description = "Low-latency Meta Quest teleoperation backend for Genesis World"
 requires-python = ">=3.11,<3.12"
-dependencies = ["torch", "genesis-world", "aiortc", "aiohttp", "numpy", "scipy", "PyYAML"]
+dependencies = ["torch", "genesis-world[usd]", "aiortc", "aiohttp", "numpy", "scipy", "PyYAML", "gs-nyx-plugin", "imgui-bundle"]
 
 [project.scripts]
 genesis-quest-teleop = "genesis_quest_teleop.main:main"
 genesis-quest-ingress = "genesis_quest_teleop.ingress:main"
+genesis-quest-calibrate-wrist-camera = "genesis_quest_teleop.calibrate_wrist_camera:main"
+genesis-quest-place-scene = "genesis_quest_teleop.place_scene:main"
+genesis-quest-import-usd = "genesis_quest_teleop.import_usd_scene:main"
+genesis-quest-repair-usd-materials = "genesis_quest_teleop.repair_usd_materials:main"
 
 [dependency-groups]
 dev = ["ruff"]

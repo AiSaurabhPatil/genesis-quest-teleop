@@ -7,18 +7,55 @@ sim: {backend: "gpu", dt: 0.008333333333333333, control_hz: 60, show_viewer: tru
 scene:
   grasp_cube:
     enabled: true
-    position: [0.65, 0.0, 0.025]
+    position: [0.650000, -0.000000, 0.024744]
     size: [0.05, 0.05, 0.05]
     friction: 1.5
     density: 600.0
-    color: [0.2, 0.8, 0.2, 1.0]
+    # Disney principled (PBR) surface. The bright gold-like finish makes
+    # Nyx's direct lighting and reflections easy to inspect from the wrist.
+    color: [1.0, 0.62, 0.08, 1.0]
+    pbr: {metallic: 0.85, roughness: 0.22}
+nyx_camera:
+  enabled: true
+
+  # Mount camera to Franka wrist.
+  parent_link: "hand"
+
+  # Nyx rendering.
+  resolution: [640, 480]
+  fov: 60.0
+  near: 0.02
+  far: 5.0
+  spp: 16
+
+  # Do NOT render at physics rate.
+  # 120 Hz physics / 30 Hz Nyx = one render every 4 physics steps.
+  render_hz: 30
+
+  # Opens the native Nyx live-preview window.
+  open_window: true
+
+  # Camera pose relative to Franka "hand" link.
+  # Taken from the official Nyx Franka attached-camera example.
+  offset_T:
+    # - [ 0.624695, -0.480604,  0.615457, 0.10]
+    # - [-0.780869, -0.384483,  0.492366, 0.08]
+    # - [ 0.000000, -0.788170, -0.615457, 0.00]
+    # - [ 0.000000,  0.000000,  0.000000, 1.00]
+    - [-0.02630047,  0.87705946,  0.47966412,  0.14224562]
+    - [ 0.99955219,  0.01624040,  0.02511046,  0.00700251]
+    - [ 0.01423358,  0.48011094, -0.87709743, -0.02858979]
+    - [ 0.00000000,  0.00000000,  0.00000000,  1.00000000]
+
 robot:
   type: "franka"
   mjcf_file: "xml/franka_emika_panda/panda.xml"
+  base_position: [0.000000, 0.749365, 0.006661]
+  base_euler_deg: [0.000000, 0.000000, -40.799611]
   end_effector_link: "hand"
   arm_joint_names: [joint1, joint2, joint3, joint4, joint5, joint6, joint7]
   finger_joint_names: [finger_joint1, finger_joint2]
-  home_qpos: [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785, 0.04, 0.04]
+  home_qpos: [-0.042000, -0.784100, -0.169000, -2.634000, -0.254000, 2.294000, 0.785000, 0.040000, 0.040000]
 teleop:
   active_hand: "right"
   translation_scale: 1.0

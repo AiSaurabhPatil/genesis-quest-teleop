@@ -24,6 +24,15 @@ Then run:
 uv run genesis-quest-teleop --config config/default.yaml
 ```
 
+To open the Isaac Sim FFw BG2 USD stage directly in Genesis:
+
+```bash
+uv run genesis-quest-import-usd
+```
+
+Pass a different stage with `--usd /path/to/stage.usd`; use `--cpu` if CUDA is
+not available, or `--headless` to validate/build the import without the viewer.
+
 For a persistent Quest connection while iterating on the Genesis scene, run the
 transport and simulator in separate terminals. Keep the first command running:
 

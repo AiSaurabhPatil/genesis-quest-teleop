@@ -40,7 +40,11 @@ class FrankaAdapter(RobotAdapter):
         import genesis as gs
 
         self._robot = scene.add_entity(
-            gs.morphs.MJCF(file=self.config["robot"]["mjcf_file"])
+            gs.morphs.MJCF(
+                file=self.config["robot"]["mjcf_file"],
+                pos=tuple(self.config["robot"].get("base_position", (0.0, 0.0, 0.0))),
+                euler=tuple(self.config["robot"].get("base_euler_deg", (0.0, 0.0, 0.0))),
+            )
         )
 
     def initialize_after_scene_build(self):

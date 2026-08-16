@@ -1,0 +1,16 @@
+#usda 1.0
+(
+    subLayers = [
+        @/home/saurabh/Developement/telesim/robot_configs/ffw_bg2_config/Collected_ffw_bg2_env_v2/ffw_bg2_env_v2.usd@
+    ]
+)
+
+over "World"
+{
+    over "FFW_BG2" (
+        payload = @/home/saurabh/Developement/genesis-quest-teleop/generated/FFW_BG2_materials_fixed.usd@</Root>
+    )
+    {
+    }
+}
+

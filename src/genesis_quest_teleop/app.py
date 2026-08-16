@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import time
 
+import gs_nyx.nyx_py_renderer as npr
 import numpy as np
+from gs_nyx_plugin.nyx_camera_options import NyxCameraOptions
 
 from .control.diffik import DifferentialIKController
 from .diagnostics import Diagnostics
@@ -27,6 +29,9 @@ class GenesisTeleopApp:
         self.external_ingress = external_ingress
         self.server = None
         self.local_receiver = None
+        self._hold_reason = None
+        self.wrist_camera = None
+        self.nyx_render_divisor = None
         if external_ingress:
             self.local_receiver = LocalStateReceiver(
                 config, self.store, self.diagnostics
@@ -63,6 +68,7 @@ class GenesisTeleopApp:
         self.grasp_cube = None
         cube = self.config.get("scene", {}).get("grasp_cube", {})
         if cube.get("enabled", False):
+            pbr = cube.get("pbr", {})
             self.grasp_cube = self.scene.add_entity(
                 morph=gs.morphs.Box(
                     pos=tuple(cube["position"]),
@@ -71,10 +77,59 @@ class GenesisTeleopApp:
                 material=gs.materials.Rigid(
                     friction=cube["friction"], rho=cube["density"]
                 ),
-                surface=gs.surfaces.Plastic(color=tuple(cube["color"])),
+                surface=gs.surfaces.Default(
+                    color=tuple(cube["color"]),
+                    metallic=float(pbr.get("metallic", 0.0)),
+                    roughness=float(pbr.get("roughness", 0.5)),
+                ),
             )
         self.robot = FrankaAdapter(self.config)
         self.robot.build(self.scene)
+        # ---------------------------------------------------------
+        # Nyx wrist camera
+        # ---------------------------------------------------------
+        nyx_cfg = self.config.get("nyx_camera", {})
+
+        if nyx_cfg.get("enabled", False):
+            parent_link = self.robot.entity.get_link(nyx_cfg["parent_link"])
+
+            offset_T = np.asarray(
+                nyx_cfg["offset_T"],
+                dtype=np.float64,
+            )
+
+            self.wrist_camera = self.scene.add_sensor(
+                NyxCameraOptions(
+                    res=tuple(nyx_cfg["resolution"]),
+                    fov=float(nyx_cfg["fov"]),
+                    near=float(nyx_cfg["near"]),
+                    far=float(nyx_cfg["far"]),
+
+                    # Attach camera to Franka wrist.
+                    entity_idx=self.robot.entity.idx,
+                    link_idx_local=parent_link.idx_local,
+                    offset_T=offset_T,
+
+                    # Rendering quality.
+                    spp=int(nyx_cfg["spp"]),
+                    render_mode=npr.ERenderMode.FastPathTracer,
+
+                    # Native Nyx live preview.
+                    open_window=bool(nyx_cfg["open_window"]),
+
+                    # Simple scene illumination.
+                    lights=[
+                        {
+                            "type": "directional",
+                            "dir": (-0.4, -0.4, -0.8),
+                            "color": (1.0, 1.0, 1.0),
+                            "intensity": 5.0,
+                            "shadow": True,
+                        }
+                    ],
+                )
+            )
+
         self.scene.build()
         self.robot.initialize_after_scene_build()
         for _ in range(s["warmup_steps"]):
@@ -100,6 +155,14 @@ class GenesisTeleopApp:
                 axis_radius=0.005,
             )
         self.divisor = max(1, round((1 / s["dt"]) / s["control_hz"]))
+        if self.wrist_camera is not None:
+            physics_hz = 1.0 / s["dt"]
+            nyx_hz = float(self.config["nyx_camera"]["render_hz"])
+
+            self.nyx_render_divisor = max(
+                1,
+                round(physics_hz / nyx_hz),
+            )
 
     def _enter_hold(self, reason):
         self.clutch.force_hold()
@@ -147,11 +210,25 @@ class GenesisTeleopApp:
 
     def run(self):
         idx = 0
+
         while True:
             if idx % self.divisor == 0:
                 self._control()
+
             self.diagnostics.maybe_log()
+
+            # Physics stays independent of Nyx rendering.
             self.scene.step()
+
+            # Nyx uses render-on-read. Rendering only here prevents
+            # the path tracer from running at the 120 Hz physics rate.
+            if (
+                self.wrist_camera is not None
+                and self.nyx_render_divisor is not None
+                and idx % self.nyx_render_divisor == 0
+            ):
+                self.wrist_camera.read()
+
             idx += 1
 
     def _control(self):
