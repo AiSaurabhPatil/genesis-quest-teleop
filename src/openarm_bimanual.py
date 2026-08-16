@@ -24,6 +24,10 @@ LEFT_ARM_JOINTS = [f"openarm_left_joint{i}" for i in range(1, 8)]
 RIGHT_ARM_JOINTS = [f"openarm_right_joint{i}" for i in range(1, 8)]
 LEFT_GRIPPER_JOINTS = ["openarm_left_finger_joint1", "openarm_left_finger_joint2"]
 RIGHT_GRIPPER_JOINTS = ["openarm_right_finger_joint1", "openarm_right_finger_joint2"]
+FINGER_LINKS_BY_HAND = {
+    "left": ("openarm_left_left_finger", "openarm_left_right_finger"),
+    "right": ("openarm_right_left_finger", "openarm_right_right_finger"),
+}
 LEFT_EE_NAME = "openarm_left_hand"
 RIGHT_EE_NAME = "openarm_right_hand"
 
@@ -32,6 +36,9 @@ RIGHT_HOME = np.array([0.0, 1.0, 0.0, 1.2, 0.0, 0.0, 0.0])
 ARM_KP = np.array([400, 400, 300, 250, 150, 100, 80])
 ARM_KV = np.array([40, 40, 30, 25, 15, 10, 8])
 GRIPPER_OPEN_POSITION = 0.04
+GRIPPER_KP = 80.0
+GRIPPER_KV = 4.0
+MIMIC_TOLERANCE = 2e-3
 IK_SOLVER_POSITION_TOLERANCE_M = 0.005
 IK_SOLVER_ROTATION_TOLERANCE_RAD = 0.02
 # The imported URDF effort limits are intentionally preserved. This validation
@@ -168,6 +175,74 @@ def print_state(robot: object, left_dofs: list[int], right_dofs: list[int], labe
     print("  right positions:", as_numpy(robot.get_dofs_position(right_dofs)))
     print("  left control forces:", as_numpy(robot.get_dofs_control_force(left_dofs)))
     print("  right control forces:", as_numpy(robot.get_dofs_control_force(right_dofs)))
+
+
+def aabb_center(link: object, method: str) -> np.ndarray:
+    aabb = as_numpy(getattr(link, method)())
+    return (aabb[0] + aabb[1]) / 2.0
+
+
+def quat_to_rotation_matrix_wxyz(quat: np.ndarray) -> np.ndarray:
+    w, x, y, z = quat_normalize(quat)
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+
+
+def print_finger_geometry_diagnostics(robot: object) -> None:
+    """Print named-link geometry state once, avoiding DOF-number identity assumptions."""
+    parent_joint_by_link = {
+        "openarm_left_left_finger": "openarm_left_finger_joint2",
+        "openarm_left_right_finger": "openarm_left_finger_joint1",
+        "openarm_right_left_finger": "openarm_right_finger_joint2",
+        "openarm_right_right_finger": "openarm_right_finger_joint1",
+    }
+    print("Finger geometry diagnostics:")
+    for link_name, parent_joint_name in parent_joint_by_link.items():
+        link = resolve_link(robot, link_name)
+        parent_joint = robot.get_joint(parent_joint_name)
+        q = as_numpy(robot.get_dofs_position(parent_joint.dofs_idx_local))
+        print(
+            f"  {link_name}: parent={parent_joint_name}, q={q}, pos={as_numpy(link.get_pos())}, "
+            f"visual_center={aabb_center(link, 'get_vAABB')}, collision_center={aabb_center(link, 'get_AABB')}"
+        )
+
+
+def validate_gripper_positions(
+    scene: object, robot: object, hand: str, driver_dof: int, mimic_dof: int
+) -> None:
+    """Exercise the driver only and verify mimic agreement and growing named-link separation."""
+    left_name, right_name = FINGER_LINKS_BY_HAND[hand]
+    left_link, right_link = resolve_link(robot, left_name), resolve_link(robot, right_name)
+    hand_link = resolve_link(robot, f"openarm_{hand}_hand")
+    separations: list[float] = []
+    for target in (0.0, 0.02, 0.04):
+        robot.control_dofs_position(np.array([target]), dofs_idx_local=[driver_dof])
+        for _ in range(50):
+            scene.step()
+        q1, q2 = as_numpy(robot.get_dofs_position([driver_dof, mimic_dof]))
+        if abs(q1 - q2) >= MIMIC_TOLERANCE:
+            raise RuntimeError(f"{hand} gripper mimic mismatch at q={target}: driver={q1}, mimic={q2}")
+        hand_pos = as_numpy(hand_link.get_pos())
+        hand_rotation = quat_to_rotation_matrix_wxyz(as_numpy(hand_link.get_quat()))
+        left_local = hand_rotation.T @ (as_numpy(left_link.get_pos()) - hand_pos)
+        right_local = hand_rotation.T @ (as_numpy(right_link.get_pos()) - hand_pos)
+        if left_local[1] <= 0 or right_local[1] >= 0:
+            raise RuntimeError(f"{hand} gripper named links are on non-canonical sides: left={left_local}, right={right_local}")
+        if abs(abs(left_local[1]) - abs(right_local[1])) >= 5e-3:
+            raise RuntimeError(f"{hand} gripper movement is not symmetric: left={left_local}, right={right_local}")
+        separation = float(np.linalg.norm(left_local - right_local))
+        separations.append(separation)
+        print(
+            f"{hand} gripper q={target:.3f}: driver={q1:.5f}, mimic={q2:.5f}, "
+            f"left_local={left_local}, right_local={right_local}, separation={separation:.5f}"
+        )
+    if not (separations[0] < separations[1] < separations[2]):
+        raise RuntimeError(f"{hand} gripper separation did not increase with driver command: {separations}")
 
 
 def step_control(scene: object, robot: object, left_dofs: list[int], right_dofs: list[int], steps: int, label: str) -> None:
@@ -381,19 +456,25 @@ def main() -> None:
     robot.set_dofs_kv(ARM_KV, dofs_idx_local=right_dofs)
     ensure_effort_limits(robot, LEFT_ARM_JOINTS, left_dofs)
     ensure_effort_limits(robot, RIGHT_ARM_JOINTS, right_dofs)
+    left_driver_dof, left_mimic_dof = left_gripper_dofs
+    right_driver_dof, right_mimic_dof = right_gripper_dofs
+    for driver_dof, joint_names, gripper_dofs in (
+        (left_driver_dof, LEFT_GRIPPER_JOINTS, left_gripper_dofs),
+        (right_driver_dof, RIGHT_GRIPPER_JOINTS, right_gripper_dofs),
+    ):
+        robot.set_dofs_kp(np.array([GRIPPER_KP]), dofs_idx_local=[driver_dof])
+        robot.set_dofs_kv(np.array([GRIPPER_KV]), dofs_idx_local=[driver_dof])
+        ensure_effort_limits(robot, joint_names, gripper_dofs)
     robot.set_dofs_position(LEFT_HOME, dofs_idx_local=left_dofs)
     robot.set_dofs_position(RIGHT_HOME, dofs_idx_local=right_dofs)
-    robot.set_dofs_position(
-        np.full(len(left_gripper_dofs), GRIPPER_OPEN_POSITION), dofs_idx_local=left_gripper_dofs
-    )
-    robot.set_dofs_position(
-        np.full(len(right_gripper_dofs), GRIPPER_OPEN_POSITION), dofs_idx_local=right_gripper_dofs
-    )
-    print(
-        f"Initialized both grippers open at {GRIPPER_OPEN_POSITION:.3f} m:",
-        as_numpy(robot.get_dofs_position(left_gripper_dofs)),
-        as_numpy(robot.get_dofs_position(right_gripper_dofs)),
-    )
+    # Joint1 is the canonical driver; joint2 is constrained by the URDF mimic equality.
+    robot.set_dofs_position(np.array([GRIPPER_OPEN_POSITION]), dofs_idx_local=[left_driver_dof])
+    robot.set_dofs_position(np.array([GRIPPER_OPEN_POSITION]), dofs_idx_local=[right_driver_dof])
+    print_finger_geometry_diagnostics(robot)
+    validate_gripper_positions(scene, robot, "left", left_driver_dof, left_mimic_dof)
+    validate_gripper_positions(scene, robot, "right", right_driver_dof, right_mimic_dof)
+    robot.control_dofs_position(np.array([GRIPPER_OPEN_POSITION]), dofs_idx_local=[left_driver_dof])
+    robot.control_dofs_position(np.array([GRIPPER_OPEN_POSITION]), dofs_idx_local=[right_driver_dof])
 
     print("Passive stability test (200 steps)")
     for _ in range(200):

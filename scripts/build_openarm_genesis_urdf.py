@@ -20,13 +20,11 @@ FINGER_LINKS = (
     "openarm_right_left_finger",
     "openarm_right_right_finger",
 )
-FINGER_JOINT_CHILDREN = {
-    # The reflected mesh coordinates require this cross-association: joint1's
-    # negative axis opens the right mesh outward and joint2 mimics it for left.
-    "openarm_left_finger_joint1": "openarm_left_right_finger",
-    "openarm_left_finger_joint2": "openarm_left_left_finger",
-    "openarm_right_finger_joint1": "openarm_right_right_finger",
-    "openarm_right_finger_joint2": "openarm_right_left_finger",
+EXPECTED_FINGER_TOPOLOGY = {
+    "openarm_left_finger_joint1": ("openarm_left_hand", "openarm_left_right_finger"),
+    "openarm_left_finger_joint2": ("openarm_left_hand", "openarm_left_left_finger"),
+    "openarm_right_finger_joint1": ("openarm_right_hand", "openarm_right_right_finger"),
+    "openarm_right_finger_joint2": ("openarm_right_hand", "openarm_right_left_finger"),
 }
 TOLERANCE = 1e-12
 
@@ -147,18 +145,6 @@ def replace_link_inertial(source: str, link_name: str, replacement: str) -> str:
     return source[: link_match.start(1)] + changed_link + source[link_match.end(1) :]
 
 
-def replace_joint_child(source: str, joint_name: str, child_link: str) -> str:
-    joint_pattern = rf'(<joint name="{re.escape(joint_name)}".*?</joint>)'
-    joint_match = re.search(joint_pattern, source, flags=re.DOTALL)
-    if joint_match is None:
-        raise ValueError(f"Could not find joint '{joint_name}' in source URDF.")
-    joint_text = joint_match.group(1)
-    changed_joint, count = re.subn(r'<child link="[^"]+"/>', f'<child link="{child_link}"/>', joint_text, count=1)
-    if count != 1:
-        raise ValueError(f"{joint_name}: expected exactly one child link.")
-    return source[: joint_match.start(1)] + changed_joint + source[joint_match.end(1) :]
-
-
 def remove_inertial(link: ET.Element) -> ET.Element:
     clone = ET.fromstring(ET.tostring(link, encoding="unicode"))
     inertial = clone.find("inertial")
@@ -201,14 +187,23 @@ def verify_only_finger_inertials_changed(source_text: str, generated_text: str) 
         raise ValueError("Generated URDF changed the joint set.")
     for name, source_joint in source_joints.items():
         generated_joint = generated_joints[name]
-        if name not in FINGER_JOINT_CHILDREN:
-            if not xml_equal(source_joint, generated_joint):
-                raise ValueError(f"{name}: generated URDF changed a non-finger joint.")
-            continue
-        expected = ET.fromstring(ET.tostring(source_joint, encoding="unicode"))
-        expected.find("child").set("link", FINGER_JOINT_CHILDREN[name])
-        if not xml_equal(expected, generated_joint):
-            raise ValueError(f"{name}: generated URDF changed more than its corrected child link.")
+        if not xml_equal(source_joint, generated_joint):
+            raise ValueError(f"{name}: generated URDF changed joint semantics.")
+
+
+def validate_finger_topology(source_root: ET.Element) -> None:
+    joints = {joint.attrib["name"]: joint for joint in source_root.findall("joint")}
+    for joint_name, (parent_name, child_name) in EXPECTED_FINGER_TOPOLOGY.items():
+        joint = joints.get(joint_name)
+        if joint is None:
+            raise ValueError(f"Expected finger joint missing from source URDF: {joint_name}")
+        parent = joint.find("parent")
+        child = joint.find("child")
+        if parent is None or child is None or (parent.get("link"), child.get("link")) != (parent_name, child_name):
+            raise ValueError(
+                f"{joint_name}: source topology is not canonical; expected "
+                f"{parent_name} -> {child_name}."
+            )
 
 
 def main() -> None:
@@ -218,6 +213,7 @@ def main() -> None:
         raise FileNotFoundError(f"openarm_description package not found: {DESCRIPTION_ROOT}")
     source_text = SOURCE_URDF.read_text()
     source_root = ET.fromstring(source_text)
+    validate_finger_topology(source_root)
     links = {link.attrib["name"]: link for link in source_root.findall("link")}
     if set(FINGER_LINKS) - links.keys():
         raise ValueError(f"Expected finger links missing from source URDF: {set(FINGER_LINKS) - links.keys()}")
@@ -231,10 +227,6 @@ def main() -> None:
         print("  principal moments:", principal)
         print("  physical validation: PASS")
         generated_text = replace_link_inertial(generated_text, link_name, inertial_xml(mass, com, inertia))
-    for joint_name, child_link in FINGER_JOINT_CHILDREN.items():
-        print(f"{joint_name}: child link -> {child_link}")
-        generated_text = replace_joint_child(generated_text, joint_name, child_link)
-
     ET.fromstring(generated_text)
     verify_only_finger_inertials_changed(source_text, generated_text)
     OUTPUT_URDF.parent.mkdir(parents=True, exist_ok=True)
