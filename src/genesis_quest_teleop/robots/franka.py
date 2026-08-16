@@ -86,10 +86,13 @@ class FrankaAdapter(RobotAdapter):
         self._check_arm(arm)
         return Pose(self._ee.get_pos().cpu().numpy(), self._ee.get_quat().cpu().numpy())
 
-    def apply_arm_position(self, arm, q_arm):
+    def apply_arm_command(self, arm, position, velocity=None):
         self._check_arm(arm)
-        self._last_arm = np.asarray(q_arm)
-        self._robot.control_dofs_position(self._last_arm, dofs_idx_local=self._arm)
+        self._last_arm = np.asarray(position)
+        if velocity is None:
+            self._robot.control_dofs_position(self._last_arm, dofs_idx_local=self._arm)
+        else:
+            self._robot.control_dofs_position_velocity(self._last_arm, np.asarray(velocity), dofs_idx_local=self._arm)
 
     def apply_gripper_trigger(self, arm, trigger):
         self._check_arm(arm)
@@ -115,10 +118,14 @@ class FrankaAdapter(RobotAdapter):
         self._check_arm(arm)
         return self._robot.get_dofs_position(self._fingers).cpu().numpy()
 
-    def hold_arm(self, arm):
+    def enter_arm_hold(self, arm):
+        self._check_arm(arm)
+        self._last_arm = self._robot.get_dofs_position(self._arm).cpu().numpy()
+        self.maintain_arm_hold(arm)
+    def maintain_arm_hold(self, arm):
         self._check_arm(arm)
         if self._last_arm is not None:
-            self._robot.control_dofs_position(self._last_arm, dofs_idx_local=self._arm)
+            self._robot.control_dofs_position_velocity(self._last_arm, np.zeros(len(self._arm)), dofs_idx_local=self._arm)
         if self._finger_target is not None:
             self._robot.control_dofs_position(
                 np.full(2, self._finger_target), dofs_idx_local=self._fingers

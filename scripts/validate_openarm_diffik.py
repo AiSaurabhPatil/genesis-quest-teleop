@@ -190,16 +190,16 @@ class Harness:
         start = time.perf_counter_ns()
         command = self.controller[side].compute_command(*target)
         elapsed = time.perf_counter_ns() - start
-        if command is None or not np.isfinite(command).all():
+        if command is None or not np.isfinite(command.position).all():
             self.report.nan_inf += 1
             self.report.fail(f"{side} DiffIK returned invalid command")
         q = arr(self.robot.get_dofs_position(self.dofs[side]))
-        delta = command - q
+        delta = command.position - q
         max_delta = self.controller[side].max_delta
         if self.controller[side].mode == "measured_q" and np.any(np.abs(delta) > max_delta + 1e-7):
             self.report.fail(f"{side} delta exceeded configured bound: {delta}")
         finite = np.isfinite(self.lower[side]) & np.isfinite(self.upper[side])
-        margin = np.minimum(command[finite] - self.lower[side][finite], self.upper[side][finite] - command[finite])
+        margin = np.minimum(command.position[finite] - self.lower[side][finite], self.upper[side][finite] - command.position[finite])
         if np.any(margin < self.controller[side].margin - 1e-7):
             self.report.fail(f"{side} joint-limit margin violation")
         self.report.max_delta = max(self.report.max_delta, float(np.max(abs(delta))))
@@ -209,7 +209,7 @@ class Harness:
         force_lower, force_upper = (arr(x) for x in self.robot.get_dofs_force_range(self.dofs[side]))
         effort_limit = np.maximum(np.abs(force_lower), np.abs(force_upper))
         utilization = np.divide(np.abs(force), effort_limit, out=np.full_like(force, np.nan), where=effort_limit > 0)
-        return Sample(timestamp, float(np.linalg.norm(target[0] - pos)), angle_error(target[1], quat), q, command,
+        return Sample(timestamp, float(np.linalg.norm(target[0] - pos)), angle_error(target[1], quat), q, command.position,
                       delta, self.controller[side].last_raw_dq.copy(), self.controller[side].last_clipped_dq.copy(),
                       force, force_lower, force_upper, utilization, self.controller[side].last_singular_values.copy(), elapsed)
 
@@ -221,7 +221,11 @@ class Harness:
             # Both commands are computed from the same pre-command state.
             commands = {side: self._command(side, target, tick / CONTROL_HZ) for side, target in targets.items()}
             for side, sample in commands.items():
-                self.robot.control_dofs_position(sample.command, dofs_idx_local=self.dofs[side])
+                velocity = self.controller[side].last_qdot_command
+                if velocity is None:
+                    self.robot.control_dofs_position(sample.command, dofs_idx_local=self.dofs[side])
+                else:
+                    self.robot.control_dofs_position_velocity(sample.command, velocity, dofs_idx_local=self.dofs[side])
                 samples[side].append(sample)
                 if compact_diagnostics and tick % 30 == 0:
                     print(f"t={sample.timestamp:.2f}s pos={sample.position_error*1000:.2f}mm "
@@ -370,7 +374,7 @@ def main() -> int:
                         help="Use focus for the isolated left -X 3 cm diagnostic.")
     parser.add_argument("--gravity", choices=("on", "off"), default="on",
                         help="Use off only for the controlled zero-gravity A/B diagnostic.")
-    parser.add_argument("--controller", choices=("measured_q", "desired_q"), default="measured_q",
+    parser.add_argument("--controller", choices=("measured_q", "desired_q", "resolved_rate"), default="measured_q",
                         help="Keep measured_q as the failed baseline; desired_q is the bounded stateful candidate.")
     parser.add_argument("--kinematic", action="store_true",
                         help="For --test focus, directly set each DiffIK command to isolate solver mathematics from PD dynamics.")
@@ -379,6 +383,15 @@ def main() -> int:
     try:
         if not URDF_PATH.is_file(): raise FileNotFoundError(URDF_PATH)
         config = yaml.safe_load(CONFIG_PATH.read_text())
+        if args.controller == "resolved_rate":
+            config["diffik"] = {
+                "mode": "resolved_rate", "damping": 0.02,
+                "position_rate_gain": 5.0, "rotation_rate_gain": 4.0,
+                "max_linear_velocity_m_s": 0.50, "max_angular_velocity_rad_s": 1.50,
+                "max_joint_velocity_rad_s": 2.0, "max_joint_acceleration_rad_s2": 12.0,
+                "position_lookahead_s": 0.04, "max_position_lead_rad": 0.05,
+                "joint_limit_margin_rad": 0.03,
+            }
         gs.init(backend=gs.gpu)
         rigid_options = gs.options.RigidOptions(gravity=(0.0, 0.0, 0.0)) if args.gravity == "off" else gs.options.RigidOptions()
         scene = gs.Scene(sim_options=gs.options.SimOptions(dt=SIM_DT), rigid_options=rigid_options, show_viewer=not args.headless)

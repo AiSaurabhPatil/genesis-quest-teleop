@@ -135,9 +135,13 @@ class GenesisTeleopApp:
             self.scene.step()
         if hasattr(self.robot, "capture_hold_targets"):
             self.robot.capture_hold_targets()
+        physics_dt = s["dt"]
+        physics_hz = 1.0 / physics_dt
+        self.divisor = max(1, round(physics_hz / s["control_hz"]))
+        self.control_dt = self.divisor * physics_dt
         self.diffik, self.clutch, self.last_target, self.debug_target = {}, {}, {}, {}
         for arm in self.robot.arm_names:
-            self.diffik[arm] = DifferentialIKController(self.robot.entity, self.robot.get_ee_link(arm), self.robot.get_arm_dofs_idx(arm), self.config)
+            self.diffik[arm] = DifferentialIKController(self.robot.entity, self.robot.get_ee_link(arm), self.robot.get_arm_dofs_idx(arm), self.config, control_dt=self.control_dt, joint_velocity_limits=self.robot.get_arm_velocity_limits(arm))
             self.diffik[arm].reset_command_state()
             self.clutch[arm] = ClutchController(self.config)
             self.clutch[arm].force_hold()
@@ -147,7 +151,6 @@ class GenesisTeleopApp:
                 import genesis.utils.geom as gu
                 p = self.last_target[arm]
                 self.debug_target[arm] = self.scene.draw_debug_frame(T=gu.trans_quat_to_T(p.position, p.quaternion_wxyz), axis_length=0.12, origin_size=0.008, axis_radius=0.005)
-        self.divisor = max(1, round((1 / s["dt"]) / s["control_hz"]))
         if self.wrist_camera is not None:
             physics_hz = 1.0 / s["dt"]
             nyx_hz = float(self.config["nyx_camera"]["render_hz"])
@@ -159,7 +162,10 @@ class GenesisTeleopApp:
 
     def _enter_arm_hold(self, arm, reason):
         self.clutch[arm].force_hold()
-        self.robot.hold_arm(arm)
+        if self.arm_hold_reason.get(arm) is None:
+            self.robot.enter_arm_hold(arm)
+        else:
+            self.robot.maintain_arm_hold(arm)
         self.diffik[arm].reset_command_state()
         if reason != self.arm_hold_reason.get(arm):
             self.diagnostics.increment(f"{arm}_{'tracking_loss_holds' if reason == 'tracking' else 'diffik_failures' if reason == 'diffik_failure' else 'holds'}")
@@ -258,11 +264,12 @@ class GenesisTeleopApp:
                 self.last_target[arm] = self.robot.get_ee_pose(arm)
                 self.diagnostics.increment(f"{arm}_clutch_engages")
             if out.just_released:
-                self.robot.hold_arm(arm)
+                self.robot.enter_arm_hold(arm)
                 self.diffik[arm].reset_command_state()
+                self.arm_hold_reason[arm] = "clutch"
                 self.diagnostics.increment(f"{arm}_clutch_releases")
             if not out.engaged or not out.target_pose:
-                self.robot.hold_arm(arm)
+                self.robot.maintain_arm_hold(arm)
                 continue
             target = self._safe_target(arm, out.target_pose)
             command = self.diffik[arm].compute_command(target.position, target.quaternion_wxyz)
@@ -279,9 +286,31 @@ class GenesisTeleopApp:
                 self.diagnostics.set_value(f"{arm}_max_raw_dq", float(np.max(np.abs(raw))))
             if clipped is not None:
                 self.diagnostics.set_value(f"{arm}_max_clipped_dq", float(np.max(np.abs(clipped))))
+            controller = self.diffik[arm]
+            self.diagnostics.set_value(f"{arm}_position_error_m", float(np.linalg.norm(target.position - self.robot.get_ee_pose(arm).position)))
+            self.diagnostics.set_value(f"{arm}_rotation_error_rad", float(np.linalg.norm(controller.last_error[3:] / controller.rotation_rate_gain)) if controller.mode == "resolved_rate" else float(np.linalg.norm(controller.last_error[3:])))
+            if controller.mode == "resolved_rate":
+                self.diagnostics.set_value(f"{arm}_max_qdot_raw", float(np.max(np.abs(controller.last_raw_dq))))
+                self.diagnostics.set_value(f"{arm}_max_qdot_command", float(np.max(np.abs(controller.last_qdot_command))))
+                self.diagnostics.set_value(f"{arm}_max_position_lead", float(np.max(np.abs(controller.last_position_lead))))
+                self.diagnostics.set_value(f"{arm}_velocity_limited", controller.velocity_limited)
+                self.diagnostics.set_value(f"{arm}_acceleration_limited", controller.acceleration_limited)
+                self.diagnostics.set_value(f"{arm}_joint_limit_clamped", controller.joint_limit_clamped)
             self.arm_hold_reason[arm] = None
         for arm, command in commands.items():
-            self.robot.apply_arm_position(arm, command)
+            self.robot.apply_arm_command(arm, command.position, command.velocity)
+            dofs = self.robot.get_arm_dofs_idx(arm)
+            q = self.robot.entity.get_dofs_position(dofs).cpu().numpy()
+            qdot = self.robot.entity.get_dofs_velocity(dofs).cpu().numpy()
+            force = self.robot.entity.get_dofs_control_force(dofs).cpu().numpy()
+            lower, upper = (x.cpu().numpy() for x in self.robot.entity.get_dofs_force_range(dofs))
+            limits = np.maximum(np.abs(lower), np.abs(upper))
+            utilization = np.divide(np.abs(force), limits, out=np.zeros_like(force), where=limits > 0)
+            self.diagnostics.set_value(f"{arm}_max_joint_velocity_measured", float(np.max(np.abs(qdot))))
+            self.diagnostics.set_value(f"{arm}_max_control_force_utilization", float(np.max(utilization)))
+            self.diagnostics.set_value(f"{arm}_max_joint_position_tracking_error", float(np.max(np.abs(command.position - q))))
+            if command.velocity is not None:
+                self.diagnostics.set_value(f"{arm}_max_joint_velocity_tracking_error", float(np.max(np.abs(command.velocity - qdot))))
 
     def shutdown(self):
         if self.local_receiver:

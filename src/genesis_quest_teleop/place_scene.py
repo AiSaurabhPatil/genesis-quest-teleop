@@ -6,7 +6,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from .config import load_config, project_root
-from .robots.franka import FrankaAdapter
+from .robots import create_robot_adapter
 
 
 def _format_vector(values: np.ndarray) -> str:
@@ -65,7 +65,9 @@ def main():
                 roughness=float(pbr.get("roughness", 0.5)),
             ),
         )
-    robot = FrankaAdapter(config)
+    # Use the same adapter factory as the teleop runtime so this utility works
+    # with every robot type supported by the project (currently Franka/OpenArm).
+    robot = create_robot_adapter(config)
     robot.build(scene)
     scene.build()
     robot.initialize_after_scene_build()

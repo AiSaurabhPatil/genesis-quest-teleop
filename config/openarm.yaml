@@ -8,8 +8,8 @@ robot:
   type: "openarm"
   urdf_file: "assets/openarm/openarm_bimanual_genesis.urdf"
   home:
-    left: [0.0, -1.0, 0.0, 1.2, 0.0, 0.0, 0.0]
-    right: [0.0, 1.0, 0.0, 1.2, 0.0, 0.0, 0.0]
+    left: [0.011210, 0.013000, 0.024000, 1.480000, -0.000284, -0.007256, 0.005467]
+    right: [-0.011212, 0.042000, -0.059000, 1.502000, 0.000330, 0.007288, -0.005467]
   arm_kp: [400, 400, 300, 250, 150, 100, 80]
   arm_kv: [40, 40, 30, 25, 15, 10, 8]
 teleop:
@@ -24,7 +24,18 @@ teleop:
   workspace:
     left: {x: [0.10, 0.85], y: [0.02, 0.80], z: [0.05, 0.85]}
     right: {x: [0.10, 0.85], y: [-0.80, -0.02], z: [0.05, 0.85]}
-diffik: {mode: "desired_q", damping: 0.02, position_gain: 0.7, rotation_gain: 0.5, max_joint_delta_rad: 0.08, joint_limit_margin_rad: 0.03, max_command_lead_rad: 0.20}
+diffik:
+  mode: "resolved_rate"
+  damping: 0.02
+  position_rate_gain: 5.0
+  rotation_rate_gain: 4.0
+  max_linear_velocity_m_s: 0.50
+  max_angular_velocity_rad_s: 1.50
+  max_joint_velocity_rad_s: 2.0
+  max_joint_acceleration_rad_s2: 12.0
+  position_lookahead_s: 0.04
+  max_position_lead_rad: 0.05
+  joint_limit_margin_rad: 0.03
 gripper:
   open_position: 0.04
   closed_position: 0.0

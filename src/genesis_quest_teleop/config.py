@@ -90,9 +90,22 @@ def load_config(path: str | Path) -> dict:
                 raise ValueError("OpenArm arm bindings must be unique")
             if len(robot["arm_kp"]) != 7 or len(robot["arm_kv"]) != 7:
                 raise ValueError("OpenArm arm_kp and arm_kv must contain 7 values")
-            if config["diffik"].get("mode") not in ("measured_q", "desired_q"):
-                raise ValueError("diffik.mode must be measured_q or desired_q")
-            if float(config["diffik"].get("max_command_lead_rad", 0)) <= 0:
+            diffik = config["diffik"]
+            mode = diffik.get("mode", "measured_q")
+            if mode not in ("measured_q", "desired_q", "resolved_rate"):
+                raise ValueError("diffik.mode must be measured_q, desired_q, or resolved_rate")
+            if mode == "resolved_rate":
+                positive = ("position_rate_gain", "rotation_rate_gain", "max_linear_velocity_m_s",
+                            "max_angular_velocity_rad_s", "max_joint_velocity_rad_s",
+                            "max_joint_acceleration_rad_s2", "max_position_lead_rad")
+                for key in positive:
+                    if float(diffik.get(key, 0)) <= 0:
+                        raise ValueError(f"diffik.{key} must be positive for resolved_rate")
+                if float(diffik.get("position_lookahead_s", -1)) < 0:
+                    raise ValueError("diffik.position_lookahead_s must be non-negative for resolved_rate")
+                if float(diffik.get("joint_limit_margin_rad", -1)) < 0:
+                    raise ValueError("diffik.joint_limit_margin_rad must be non-negative")
+            elif mode == "desired_q" and float(diffik.get("max_command_lead_rad", 0)) <= 0:
                 raise ValueError("diffik.max_command_lead_rad must be positive")
             if not float(config["gripper"]["grasp_release_threshold"]) < float(config["gripper"]["grasp_engage_threshold"]):
                 raise ValueError("invalid gripper grasp thresholds")
