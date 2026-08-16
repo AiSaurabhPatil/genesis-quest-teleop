@@ -65,15 +65,41 @@ def load_config(path: str | Path) -> dict:
         if not 0.01 <= float(config["gripper"]["finger_friction"]) <= 5.0:
             raise ValueError("gripper.finger_friction must be between 0.01 and 5.0")
         robot = config["robot"]
+        if robot["type"] not in ("franka", "openarm"):
+            raise ValueError("robot.type must be franka or openarm")
         for key in ("base_position", "base_euler_deg"):
             if key in robot and len(robot[key]) != 3:
                 raise ValueError(f"robot.{key} must contain [x, y, z]")
         t = config["teleop"]
         if not 0 <= t["clutch_release_threshold"] < t["clutch_engage_threshold"] <= 1:
             raise ValueError("invalid clutch thresholds")
-        for axis in "xyz":
-            if t["workspace"][axis][0] >= t["workspace"][axis][1]:
-                raise ValueError(f"workspace.{axis} min must be less than max")
+        if robot["type"] == "openarm":
+            urdf = resolve_project_path(robot["urdf_file"])
+            if not urdf.is_file():
+                raise ValueError(f"OpenArm URDF does not exist: {urdf}")
+            for arm in ("left", "right"):
+                if len(robot["home"][arm]) != 7:
+                    raise ValueError(f"robot.home.{arm} must contain 7 values")
+                if t["arm_bindings"].get(arm) not in ("left", "right"):
+                    raise ValueError(f"teleop.arm_bindings.{arm} must be left or right")
+                for axis in "xyz":
+                    bounds = t["workspace"][arm][axis]
+                    if len(bounds) != 2 or bounds[0] >= bounds[1]:
+                        raise ValueError(f"workspace.{arm}.{axis} min must be less than max")
+            if len(set(t["arm_bindings"].values())) != 2:
+                raise ValueError("OpenArm arm bindings must be unique")
+            if len(robot["arm_kp"]) != 7 or len(robot["arm_kv"]) != 7:
+                raise ValueError("OpenArm arm_kp and arm_kv must contain 7 values")
+            if config["diffik"].get("mode") not in ("measured_q", "desired_q"):
+                raise ValueError("diffik.mode must be measured_q or desired_q")
+            if float(config["diffik"].get("max_command_lead_rad", 0)) <= 0:
+                raise ValueError("diffik.max_command_lead_rad must be positive")
+            if not float(config["gripper"]["grasp_release_threshold"]) < float(config["gripper"]["grasp_engage_threshold"]):
+                raise ValueError("invalid gripper grasp thresholds")
+        else:
+            for axis in "xyz":
+                if t["workspace"][axis][0] >= t["workspace"][axis][1]:
+                    raise ValueError(f"workspace.{axis} min must be less than max")
         nyx = config.get("nyx_camera", {})
 
         if nyx.get("enabled", False):
@@ -129,11 +155,12 @@ def load_config(path: str | Path) -> dict:
                     "nyx_camera.parent_link must not be empty"
                 )
 
-        physics_hz = 1.0 / float(config["sim"]["dt"])
-        if float(nyx["render_hz"]) > physics_hz:
-            raise ValueError(
-                "nyx_camera.render_hz must not exceed physics frequency"
-            )
+        if nyx.get("enabled", False):
+            physics_hz = 1.0 / float(config["sim"]["dt"])
+            if float(nyx["render_hz"]) > physics_hz:
+                raise ValueError(
+                    "nyx_camera.render_hz must not exceed physics frequency"
+                )
     except KeyError as exc:
         raise ValueError(f"missing configuration key: {exc}") from exc
     return config

@@ -1,0 +1,37 @@
+server: {host: "0.0.0.0", port: 8443}
+web: {directory: "web"}
+webrtc: {data_channel_label: "quest-teleop", ice_servers: [], max_message_bytes: 16384}
+ipc: {host: "127.0.0.1", port: 8765}
+tls: {cert_file: "certs/cert.pem", key_file: "certs/key.pem"}
+sim: {backend: "gpu", dt: 0.008333333333333333, control_hz: 60, show_viewer: true, warmup_steps: 60}
+robot:
+  type: "openarm"
+  urdf_file: "assets/openarm/openarm_bimanual_genesis.urdf"
+  home:
+    left: [0.0, -1.0, 0.0, 1.2, 0.0, 0.0, 0.0]
+    right: [0.0, 1.0, 0.0, 1.2, 0.0, 0.0, 0.0]
+  arm_kp: [400, 400, 300, 250, 150, 100, 80]
+  arm_kv: [40, 40, 30, 25, 15, 10, 8]
+teleop:
+  arm_bindings: {left: "left", right: "right"}
+  translation_scale: 1.0
+  clutch_engage_threshold: 0.55
+  clutch_release_threshold: 0.45
+  stale_timeout_ms: 150
+  max_target_translation_step_m: 0.010
+  max_target_rotation_step_rad: 0.10
+  # Conservative front-facing regions around the validated home poses.
+  workspace:
+    left: {x: [0.10, 0.85], y: [0.02, 0.80], z: [0.05, 0.85]}
+    right: {x: [0.10, 0.85], y: [-0.80, -0.02], z: [0.05, 0.85]}
+diffik: {mode: "desired_q", damping: 0.02, position_gain: 0.7, rotation_gain: 0.5, max_joint_delta_rad: 0.08, joint_limit_margin_rad: 0.03, max_command_lead_rad: 0.20}
+gripper:
+  open_position: 0.04
+  closed_position: 0.0
+  kp: 80.0
+  kv: 4.0
+  finger_friction: 2.0
+  grasp_engage_threshold: 0.70
+  grasp_release_threshold: 0.20
+diagnostics: {log_period_s: 2.0, debug_target_frame: true}
+nyx_camera: {enabled: false}

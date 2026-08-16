@@ -25,16 +25,8 @@ class FrankaAdapter(RobotAdapter):
         return self._robot
 
     @property
-    def ee_link(self):
-        return self._ee
-
-    @property
-    def arm_dofs_idx(self):
-        return self._arm
-
-    @property
-    def finger_dofs_idx(self):
-        return self._fingers
+    def arm_names(self):
+        return ("primary",)
 
     def build(self, scene):
         import genesis as gs
@@ -76,16 +68,31 @@ class FrankaAdapter(RobotAdapter):
         )
         for link_name in ("left_finger", "right_finger"):
             r.get_link(link_name).set_friction(gripper["finger_friction"])
-        self.apply_gripper_trigger(0)
+        self.apply_gripper_trigger("primary", 0)
 
-    def get_ee_pose(self):
+    def get_ee_link(self, arm):
+        self._check_arm(arm)
+        return self._ee
+
+    def get_arm_dofs_idx(self, arm):
+        self._check_arm(arm)
+        return self._arm
+
+    def get_finger_dofs_idx(self, arm):
+        self._check_arm(arm)
+        return self._fingers
+
+    def get_ee_pose(self, arm):
+        self._check_arm(arm)
         return Pose(self._ee.get_pos().cpu().numpy(), self._ee.get_quat().cpu().numpy())
 
-    def apply_arm_position(self, q_arm):
+    def apply_arm_position(self, arm, q_arm):
+        self._check_arm(arm)
         self._last_arm = np.asarray(q_arm)
         self._robot.control_dofs_position(self._last_arm, dofs_idx_local=self._arm)
 
-    def apply_gripper_trigger(self, trigger):
+    def apply_gripper_trigger(self, arm, trigger):
+        self._check_arm(arm)
         c = self.config["gripper"]
         trigger = float(trigger)
         if self._grasp_closed:
@@ -104,13 +111,20 @@ class FrankaAdapter(RobotAdapter):
         )
         return float(self._finger_target)
 
-    def get_finger_positions(self):
+    def get_finger_positions(self, arm):
+        self._check_arm(arm)
         return self._robot.get_dofs_position(self._fingers).cpu().numpy()
 
-    def hold(self):
+    def hold_arm(self, arm):
+        self._check_arm(arm)
         if self._last_arm is not None:
             self._robot.control_dofs_position(self._last_arm, dofs_idx_local=self._arm)
         if self._finger_target is not None:
             self._robot.control_dofs_position(
                 np.full(2, self._finger_target), dofs_idx_local=self._fingers
             )
+
+    @staticmethod
+    def _check_arm(arm):
+        if arm != "primary":
+            raise ValueError(f"unknown Franka arm: {arm}")
