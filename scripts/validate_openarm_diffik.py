@@ -3,6 +3,12 @@
 The harness deliberately uses synthetic Cartesian targets only.  It runs
 physics at 120 Hz and Differential IK at 60 Hz, matching the intended
 teleoperation architecture without importing the teleoperation stack.
+
+Genesis's Differential IK example is a kinematic reference, not a complete
+gravity-loaded manipulator controller: it runs with gravity, collisions, and
+joint limits disabled.  In particular, its ``measured_q + dq`` command pattern
+must not be treated as evidence that a finite-effort PD arm should be driven
+that way in teleoperation.
 """
 
 from __future__ import annotations
@@ -105,6 +111,12 @@ class Sample:
     q: np.ndarray
     command: np.ndarray
     delta: np.ndarray
+    raw_dq: np.ndarray
+    clipped_dq: np.ndarray
+    control_force: np.ndarray
+    force_lower: np.ndarray
+    force_upper: np.ndarray
+    force_utilization: np.ndarray
     singular_values: np.ndarray
     elapsed_ns: int
 
@@ -127,7 +139,8 @@ class Report:
 
 class Harness:
     def __init__(self, scene: object, robot: object, left_ee: object, right_ee: object,
-                 left_dofs: list[int], right_dofs: list[int], gripper_drivers: list[int], config: dict, report: Report):
+                 left_dofs: list[int], right_dofs: list[int], gripper_drivers: list[int], config: dict, report: Report,
+                 controller_mode: str = "measured_q"):
         self.scene, self.robot, self.report = scene, robot, report
         self.ee = {"left": left_ee, "right": right_ee}
         self.dofs = {"left": left_dofs, "right": right_dofs}
@@ -137,6 +150,8 @@ class Harness:
             "left": DifferentialIKController(robot, left_ee, left_dofs, config),
             "right": DifferentialIKController(robot, right_ee, right_dofs, config),
         }
+        for controller in self.controller.values():
+            controller.mode = controller_mode
         self.lower = {side: arr(robot.get_dofs_limit(indices)[0]) for side, indices in self.dofs.items()}
         self.upper = {side: arr(robot.get_dofs_limit(indices)[1]) for side, indices in self.dofs.items()}
 
@@ -155,6 +170,8 @@ class Harness:
         state = arr(self.robot.get_dofs_position())
         if not np.isfinite(state).all():
             self.report.fail("home stability failed: non-finite joint state")
+        for side, controller in self.controller.items():
+            controller.reset_command_state(arr(self.robot.get_dofs_position(self.dofs[side])))
 
     def jacobian_check(self, side: str) -> None:
         jac = arr(self.robot.get_jacobian(link=self.ee[side]))[:, self.dofs[side]]
@@ -179,7 +196,7 @@ class Harness:
         q = arr(self.robot.get_dofs_position(self.dofs[side]))
         delta = command - q
         max_delta = self.controller[side].max_delta
-        if np.any(np.abs(delta) > max_delta + 1e-7):
+        if self.controller[side].mode == "measured_q" and np.any(np.abs(delta) > max_delta + 1e-7):
             self.report.fail(f"{side} delta exceeded configured bound: {delta}")
         finite = np.isfinite(self.lower[side]) & np.isfinite(self.upper[side])
         margin = np.minimum(command[finite] - self.lower[side][finite], self.upper[side][finite] - command[finite])
@@ -188,11 +205,16 @@ class Harness:
         self.report.max_delta = max(self.report.max_delta, float(np.max(abs(delta))))
         self.report.min_limit_margin = min(self.report.min_limit_margin, float(np.min(margin)))
         self.report.timings_ns.append(elapsed)
+        force = arr(self.robot.get_dofs_control_force(self.dofs[side]))
+        force_lower, force_upper = (arr(x) for x in self.robot.get_dofs_force_range(self.dofs[side]))
+        effort_limit = np.maximum(np.abs(force_lower), np.abs(force_upper))
+        utilization = np.divide(np.abs(force), effort_limit, out=np.full_like(force, np.nan), where=effort_limit > 0)
         return Sample(timestamp, float(np.linalg.norm(target[0] - pos)), angle_error(target[1], quat), q, command,
-                      delta, self.controller[side].last_singular_values.copy(), elapsed)
+                      delta, self.controller[side].last_raw_dq.copy(), self.controller[side].last_clipped_dq.copy(),
+                      force, force_lower, force_upper, utilization, self.controller[side].last_singular_values.copy(), elapsed)
 
     def run_targets(self, targets: dict[str, tuple[np.ndarray, np.ndarray]], seconds: float,
-                    hold_inactive: bool = True) -> dict[str, list[Sample]]:
+                    hold_inactive: bool = True, compact_diagnostics: bool = False) -> dict[str, list[Sample]]:
         samples = {side: [] for side in targets}
         ticks = int(seconds * CONTROL_HZ)
         for tick in range(ticks):
@@ -201,12 +223,49 @@ class Harness:
             for side, sample in commands.items():
                 self.robot.control_dofs_position(sample.command, dofs_idx_local=self.dofs[side])
                 samples[side].append(sample)
+                if compact_diagnostics and tick % 30 == 0:
+                    print(f"t={sample.timestamp:.2f}s pos={sample.position_error*1000:.2f}mm "
+                          f"rot={math.degrees(sample.rotation_error):.2f}deg servo={np.max(abs(sample.delta)):.4f}rad "
+                          f"raw={np.max(abs(sample.raw_dq)):.4f}rad clipped={np.max(abs(sample.clipped_dq)):.4f}rad "
+                          f"force={np.nanmax(sample.force_utilization)*100:.1f}%")
             if hold_inactive:
                 for side in {"left", "right"} - set(targets):
                     self.robot.control_dofs_position(self.home[side], dofs_idx_local=self.dofs[side])
             for _ in range(PHYSICS_PER_CONTROL):
                 self.scene.step()
         return samples
+
+    def focused_x(self, kinematic: bool = False) -> dict[str, float]:
+        """The isolated, deliberately failing -X test used for controller diagnosis."""
+        self.reset()
+        pos, quat = self.pose("left")
+        target = (pos + np.array([-.03, 0., 0.]), quat)
+        if kinematic:
+            samples = []
+            for tick in range(int(3 * CONTROL_HZ)):
+                sample = self._command("left", target, tick / CONTROL_HZ)
+                self.robot.set_dofs_position(sample.command, dofs_idx_local=self.dofs["left"], zero_velocity=True)
+                samples.append(sample)
+                if tick % 30 == 0:
+                    print(f"t={sample.timestamp:.2f}s kinematic pos={sample.position_error*1000:.2f}mm rot={math.degrees(sample.rotation_error):.2f}deg")
+        else:
+            samples = self.run_targets({"left": target}, 3.0, compact_diagnostics=True)["left"]
+        final_pos, final_quat = self.pose("left")
+        pe, re = float(np.linalg.norm(target[0] - final_pos)), angle_error(target[1], final_quat)
+        tail = samples[-int(CONTROL_HZ):]
+        t = np.array([s.timestamp for s in tail])
+        ps, rs = np.array([s.position_error for s in tail]), np.array([s.rotation_error for s in tail])
+        pslope, rslope = np.polyfit(t, ps, 1)[0], np.polyfit(t, rs, 1)[0]
+        max_force = max(float(np.nanmax(s.force_utilization)) for s in samples) if not kinematic else float("nan")
+        max_lead = max(float(np.max(abs(s.delta))) for s in samples)
+        near_effort = float(np.mean([np.any(s.force_utilization >= .9) for s in samples]))
+        classification = "STEADY-STATE TRACKING ERROR" if pe > .010 and abs(pslope) < .002 else "STILL CONVERGING / NOT A PLATEAU"
+        print(f"FOCUSED {'KINEMATIC' if kinematic else 'DYNAMIC'} RESULT: final={pe*1000:.2f}mm/{math.degrees(re):.2f}deg; "
+              f"final-1s mean={ps.mean()*1000:.2f}mm/{math.degrees(rs.mean()):.2f}deg; slopes={pslope*1000:.3f}mm/s/{math.degrees(rslope):.3f}deg/s; "
+              f"max force={'n/a' if kinematic else f'{max_force*100:.1f}%'}; "
+              f"ticks any actuator >=90%={'n/a' if kinematic else f'{near_effort*100:.1f}%'}; "
+              f"max command lead={max_lead:.4f}rad; {classification}")
+        return {"position": pe, "rotation": re, "max_force": max_force, "max_lead": max_lead, "position_slope": float(pslope)}
 
     def static(self, side: str, offset: np.ndarray, world_rotation: tuple[np.ndarray, float], label: str) -> None:
         self.reset()
@@ -218,10 +277,16 @@ class Harness:
         self.report.static[label] = (pe, re)
         initial = samples[0]
         tenth = samples[min(9, len(samples) - 1)]
-        print(f"{label}: pos={pe*1000:.2f} mm rot={math.degrees(re):.2f} deg (initial {initial.position_error*1000:.1f} mm/{math.degrees(initial.rotation_error):.1f} deg; tick10 {tenth.position_error*1000:.1f} mm/{math.degrees(tenth.rotation_error):.1f} deg)")
+        peak_pos = max(s.position_error for s in samples)
+        peak_rot = max(s.rotation_error for s in samples)
+        print(f"{label}: pos={pe*1000:.2f} mm rot={math.degrees(re):.2f} deg (initial {initial.position_error*1000:.1f} mm/{math.degrees(initial.rotation_error):.1f} deg; tick10 {tenth.position_error*1000:.1f} mm/{math.degrees(tenth.rotation_error):.1f} deg; peak {peak_pos*1000:.1f} mm/{math.degrees(peak_rot):.1f} deg)")
         if pe > POS_FALLBACK or re > ROT_FALLBACK:
             self.report.fail(f"{label} failed fallback threshold: {pe*1000:.2f} mm, {math.degrees(re):.2f} deg")
-        if tenth.position_error > initial.position_error + 1e-5 or tenth.rotation_error > initial.rotation_error + math.radians(.1):
+        # The original stateless controller must improve immediately.  A
+        # stateful command deliberately accumulates limited lead to overcome
+        # gravity, so its transient is evaluated from peak/final values rather
+        # than this baseline-only tick-10 rule.
+        if self.controller[side].mode == "measured_q" and (tenth.position_error > initial.position_error + 1e-5 or tenth.rotation_error > initial.rotation_error + math.radians(.1)):
             self.report.fail(f"{label} error did not reduce by control tick 10")
 
     def orientation_convention(self) -> None:
@@ -301,14 +366,22 @@ def print_report(report: Report) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--test", choices=("static", "continuous", "bimanual", "all"), default="all")
+    parser.add_argument("--test", choices=("focus", "static", "continuous", "bimanual", "all"), default="all",
+                        help="Use focus for the isolated left -X 3 cm diagnostic.")
+    parser.add_argument("--gravity", choices=("on", "off"), default="on",
+                        help="Use off only for the controlled zero-gravity A/B diagnostic.")
+    parser.add_argument("--controller", choices=("measured_q", "desired_q"), default="measured_q",
+                        help="Keep measured_q as the failed baseline; desired_q is the bounded stateful candidate.")
+    parser.add_argument("--kinematic", action="store_true",
+                        help="For --test focus, directly set each DiffIK command to isolate solver mathematics from PD dynamics.")
     args = parser.parse_args()
     report = Report()
     try:
         if not URDF_PATH.is_file(): raise FileNotFoundError(URDF_PATH)
         config = yaml.safe_load(CONFIG_PATH.read_text())
         gs.init(backend=gs.gpu)
-        scene = gs.Scene(sim_options=gs.options.SimOptions(dt=SIM_DT), show_viewer=not args.headless)
+        rigid_options = gs.options.RigidOptions(gravity=(0.0, 0.0, 0.0)) if args.gravity == "off" else gs.options.RigidOptions()
+        scene = gs.Scene(sim_options=gs.options.SimOptions(dt=SIM_DT), rigid_options=rigid_options, show_viewer=not args.headless)
         scene.add_entity(gs.morphs.Plane())
         robot = scene.add_entity(gs.morphs.URDF(file=str(URDF_PATH), fixed=True, merge_fixed_links=True,
                                                  links_to_keep=(LEFT_EE_NAME, RIGHT_EE_NAME), recompute_inertia=False))
@@ -327,8 +400,10 @@ def main() -> int:
             robot.set_dofs_position(np.array([.04]), dofs_idx_local=[driver])
         ensure_effort_limits(robot, LEFT_GRIPPER_JOINTS, dofs(robot, LEFT_GRIPPER_JOINTS))
         ensure_effort_limits(robot, RIGHT_GRIPPER_JOINTS, dofs(robot, RIGHT_GRIPPER_JOINTS))
-        h = Harness(scene, robot, robot.get_link(LEFT_EE_NAME), robot.get_link(RIGHT_EE_NAME), ld, rd, gripper_drivers, config, report)
+        h = Harness(scene, robot, robot.get_link(LEFT_EE_NAME), robot.get_link(RIGHT_EE_NAME), ld, rd, gripper_drivers, config, report, args.controller)
         h.reset(); h.jacobian_check("left"); h.jacobian_check("right")
+        if args.test == "focus":
+            h.focused_x(kinematic=args.kinematic)
         if args.test in ("static", "all"):
             h.orientation_convention()
             for side in ("left", "right"):
